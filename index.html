@@ -97,6 +97,7 @@ button{cursor:pointer;border:none;background:none}
 .timer-actions{display:flex;justify-content:center;gap:12px;flex-wrap:wrap;margin-top:18px}
 .btn-lg{padding:16px 34px;font-size:17px;border-radius:16px}
 .timer-note{margin-top:16px;font-size:13px;color:var(--muted)}
+.timer-options{display:flex;justify-content:center;margin-top:16px}
 
 /* day chart */
 .chart-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:14px}
@@ -271,6 +272,9 @@ tbody tr:last-child td{border-bottom:none}
         <button class="btn btn-danger btn-lg hidden" id="stopBtn">⏹ Stop</button>
         <button class="btn btn-ghost hidden" id="cancelBtn">✕ Cancel session</button>
       </div>
+      <div class="timer-options">
+        <label class="switch-label"><input type="checkbox" id="quickLog"><span>Quick log — stopping just records the time, no details to fill</span></label>
+      </div>
       <div class="timer-note">Start the timer, study, then stop — you fill in the details afterwards. The timer keeps running even if you close the page.</div>
     </div>
 
@@ -414,6 +418,7 @@ const KEY='studyTracker.entries.v1',THEME_KEY='studyTracker.theme',TIMER_KEY='st
 let entries=[],lastEntry=null;
 let timerStart=null;
 let pending=null;
+let quickLog=localStorage.getItem('studyTracker.quicklog.v1')==='1';
 let viewDate=(()=>{const d=new Date();d.setHours(0,0,0,0);return d;})();
 const $=s=>document.querySelector(s);
 const $$=s=>[...document.querySelectorAll(s)];
@@ -484,9 +489,24 @@ function startTimer(){
 }
 function stopTimer(){
   if(!timerStart){return;}
-  pending={started:timerStart,ended:new Date()};
+  const started=timerStart,ended=new Date();
   clearTimer();timerStart=null;updateTimerUI();
-  openFillOut();
+  if(quickLog){logQuickSession(started,ended);}
+  else{pending={started,ended};openFillOut();}
+}
+function logQuickSession(started,ended){
+  const secs=Math.max(1,Math.floor((ended-started)/1000));
+  const entry={
+    task_id:nextId(),date:dayKey(started),
+    started_at:started.toISOString(),
+    ended_at:ended.toISOString(),
+    actual_time_min:secs<60?1:Math.round(secs/60),
+    subject:null,task_description:null,stop_reason:null,focus_rating:null
+  };
+  entries.push(entry);save();lastEntry=entry;markDirty();
+  renderAll();setSubjects();showJson(entry);
+  showToast('Logged '+fmtDur(secs)+' — time only','ok');
+  setTimeout(()=>$('#jsonPanel').scrollIntoView({behavior:'smooth',block:'nearest'}),80);
 }
 function cancelTimer(){
   if(!timerStart){return;}
@@ -596,7 +616,7 @@ function copyText(t){
 
 /* ---------- subjects ---------- */
 function setSubjects(){
-  const subs=[...new Set(entries.map(e=>e.subject))];
+  const subs=[...new Set(entries.map(e=>e.subject).filter(s=>s!=null&&s!==''))];
   $('#subjectList').innerHTML=subs.map(s=>`<option value="${esc(s)}"></option>`).join('');
   $('#subjectFilter').innerHTML='<option value="">All subjects</option>'+subs.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
 }
@@ -717,7 +737,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&syncCfg.a
 function renderTable(){
   const q=($('#search').value||'').toLowerCase().trim();
   const sub=$('#subjectFilter').value;
-  let list=entries.filter(e=>(!sub||e.subject===sub)&&(e.subject+' '+e.task_description+' '+(e.date||'')).toLowerCase().includes(q));
+  let list=entries.filter(e=>(!sub||e.subject===sub)&&(((e.subject||'')+' '+(e.task_description||'')+' '+(e.date||'')).toLowerCase().includes(q)));
   list=[...list].sort((a,b)=>((b.started_at||b.date)||'').localeCompare((a.started_at||a.date)||''));
   if(!list.length){$('#entriesTable').innerHTML=emptyBlock('No entries match your filters');return;}
   const head=`<div class="table-wrap"><table><thead><tr>
@@ -736,8 +756,8 @@ function renderTable(){
       <td class="mono">${start}</td>
       <td class="mono">${end}</td>
       <td class="mono" style="text-align:right">${fmtMin(e.actual_time_min)}</td>
-      <td><b>${esc(e.subject)}</b></td>
-      <td>${esc(e.task_description)}</td>
+      <td><b>${esc(e.subject||'—')}</b></td>
+      <td>${esc(e.task_description||'—')}</td>
       <td><span class="badge ${sm.cls}">${esc(sm.label)}</span></td>
       <td style="text-align:center;font-weight:700">${focus?'★'.repeat(focus):'—'}</td>
       <td><button class="del-btn" data-id="${e.task_id}" title="Delete">✕</button></td>
@@ -753,7 +773,7 @@ function renderTable(){
 function renderSummary(){
   const by=$('#groupBy').value;
   const groups={};
-  entries.forEach(e=>{const k=by==='day'?e.date:by==='week'?isoWeek(e.date):e.subject;(groups[k]=groups[k]||[]).push(e);});
+  entries.forEach(e=>{const k=by==='day'?e.date:by==='week'?isoWeek(e.date):(e.subject||'—');(groups[k]=groups[k]||[]).push(e);});
   const keys=Object.keys(groups).sort((a,b)=>a.localeCompare(b));
   if(!keys.length){$('#summaryOut').innerHTML=emptyBlock('No tasks logged yet — summary is empty');return;}
   $('#summaryOut').innerHTML=keys.map(k=>groupSection(k,groups[k])).join('');
@@ -762,12 +782,13 @@ function groupSection(key,list){
   const n=list.length;
   const act=list.map(e=>e.actual_time_min);
   const avgAct=mean(act),varAct=variance(act);
-  const avgFocus=mean(list.map(e=>e.focus_rating));
+  const focusVals=list.map(e=>e.focus_rating).filter(v=>v!=null);
+  const avgFocus=mean(focusVals);
   const tot=act.reduce((a,b)=>a+b,0);
   const totalBySub={};
-  list.forEach(e=>totalBySub[e.subject]=(totalBySub[e.subject]||0)+e.actual_time_min);
+  list.forEach(e=>{const s=e.subject||'—';totalBySub[s]=(totalBySub[s]||0)+e.actual_time_min;});
   const subRows=Object.entries(totalBySub).sort((a,b)=>b[1]-a[1]).map(([s,m])=>{
-    const cnt=list.filter(e=>e.subject===s).length;
+    const cnt=list.filter(e=>(e.subject||'—')===s).length;
     return `<div class="bar-row"><span class="bl">${esc(s)}</span><span class="bar-track"><span class="bar-fill" style="width:${tot?Math.max(2,m/tot*100):2}%"></span></span><span class="bar-val">${fmtMin(m)} · ${cnt} session${cnt===1?'':'s'}</span></div>`;
   }).join('');
   const stopD=distOf(list.map(e=>e.stop_reason),STOP_META,true);
@@ -779,7 +800,7 @@ function groupSection(key,list){
       ${kpi('Sessions',n,'this group')}
       ${kpi('Total time',fmtMin(tot),'sum of sessions')}
       ${kpi('Avg session',fmtMin(avgAct),'var '+Math.round(varAct)+' min²')}
-      ${kpi('Avg focus',avgFocus.toFixed(2)+' / 5','rating 1–5')}
+      ${kpi('Avg focus',focusVals.length?avgFocus.toFixed(2)+' / 5':'—',focusVals.length?'rating 1–5':'no ratings')}
     </div>
     <div class="sum-grid">
       <div class="mini-card"><h4>⏱️ Total time per subject</h4>${subRows||'<div class="empty" style="padding:16px"><p>—</p></div>'}</div>
@@ -817,6 +838,11 @@ $$('.tab').forEach(b=>b.addEventListener('click',()=>switchView(b.dataset.view))
 $('#startBtn').addEventListener('click',startTimer);
 $('#stopBtn').addEventListener('click',stopTimer);
 $('#cancelBtn').addEventListener('click',cancelTimer);
+$('#quickLog').addEventListener('change',()=>{
+  quickLog=$('#quickLog').checked;
+  localStorage.setItem('studyTracker.quicklog.v1',quickLog?'1':'0');
+  showToast(quickLog?'Quick log ON — stopping just records the time':'Quick log off','ok');
+});
 $('#saveEntry').addEventListener('click',saveFillOut);
 $('#discardEntry').addEventListener('click',discardFillOut);
 $('#prevDay').addEventListener('click',()=>{viewDate.setDate(viewDate.getDate()-1);renderDayView();});
@@ -864,6 +890,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('#fillModal').cl
   $('#syncBin').value=syncCfg.binId;
   $('#syncKey').value=syncCfg.key;
   $('#autoSync').checked=syncCfg.auto;
+  $('#quickLog').checked=quickLog;
   if(syncConfigured())syncStatus(syncCfg.auto?'Auto-sync on — next sync within a few minutes':'Ready — auto-sync off','ok');
   if(syncConfigured()&&syncCfg.auto)syncBoth(true);
   updateToday();setSubjects();updateTimerUI();renderAll();
