@@ -214,6 +214,21 @@ tbody tr:last-child td{border-bottom:none}
 .kpi .v{font-family:'Outfit';font-weight:800;font-size:20px;margin-top:3px}
 .kpi .s{font-size:11.5px;color:var(--muted)}
 
+/* live stats */
+.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px;margin-bottom:22px}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);padding:18px 20px;display:flex;align-items:center;gap:15px}
+.stat-icon{width:52px;height:52px;border-radius:14px;display:grid;place-items:center;font-size:24px;flex-shrink:0}
+.stat .val{font-family:'Outfit';font-weight:800;font-size:22px;line-height:1.15;font-variant-numeric:tabular-nums}
+.stat .lbl{font-size:11.5px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.06em}
+.stat .sub2{font-size:11.5px;color:var(--muted);font-weight:600;margin-top:2px}
+.tint-violet{background:rgba(124,58,237,.14)}
+.tint-teal{background:rgba(8,145,178,.14)}
+.tint-amber{background:rgba(245,158,11,.16)}
+.tint-green{background:rgba(22,163,74,.14)}
+.gap-row{display:flex;justify-content:space-between;gap:12px;padding:8px 12px;background:var(--surface2);border:1px solid var(--line);border-radius:10px;margin-bottom:8px;font-size:13px}
+.gap-row .gap-when{color:var(--muted);font-weight:600}
+.gap-row .gap-dur{font-weight:800;white-space:nowrap}
+
 /* sync */
 .sync-fields{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:4px}
 .sync-fields .field{flex:1;min-width:240px}
@@ -259,6 +274,7 @@ tbody tr:last-child td{border-bottom:none}
     <button class="tab active" data-view="timer">⏱️ Timer</button>
     <button class="tab" data-view="entries">🗂️ Study Log</button>
     <button class="tab" data-view="summary">📈 Summary</button>
+    <button class="tab" data-view="weekly">📅 Weekly</button>
   </nav>
 
   <!-- Timer -->
@@ -277,6 +293,8 @@ tbody tr:last-child td{border-bottom:none}
       </div>
       <div class="timer-note">Start the timer, study, then stop — you fill in the details afterwards. The timer keeps running even if you close the page.</div>
     </div>
+
+    <div class="stats-row" id="liveStats"></div>
 
     <div class="card">
       <div class="chart-head">
@@ -357,6 +375,15 @@ tbody tr:last-child td{border-bottom:none}
       </div>
       <div id="summaryOut"></div>
     </div>
+  </section>
+
+  <!-- Weekly -->
+  <section class="view hidden" id="view-weekly">
+    <div class="card">
+      <h2>Weekly statistics</h2>
+      <div class="sub">Study time per week, plus the sleep gap between your last session before sleeping and the first session after waking up</div>
+    </div>
+    <div id="weeklyOut"></div>
   </section>
 </main>
 
@@ -513,7 +540,7 @@ function cancelTimer(){
   clearTimer();timerStart=null;updateTimerUI();renderDayView();
   showToast('Session cancelled','ok');
 }
-setInterval(()=>{updateTimerUI();renderDayView();},1000);
+setInterval(()=>{updateTimerUI();renderDayView();renderLiveStats();},1000);
 
 /* ---------- 24-hour day view ---------- */
 function minutesPerHour(day){
@@ -564,6 +591,109 @@ function chartHTML(buckets,now){
   }
   return `<div class="chart-body">${cols}<div class="now-marker" style="left:${nowX}%"></div></div>`;
 }
+/* ---------- sleep gaps, live stats & weekly ---------- */
+function parseDayKey(k){const p=String(k||'').split('-').map(Number);return new Date(p[0]||1970,(p[1]||1)-1,p[2]||1);}
+function fmtDayShort(k){return parseDayKey(k).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});}
+function fmtAgo(ms){
+  if(!isFinite(ms)||ms<0)ms=0;
+  const s=Math.floor(ms/1000);
+  const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600),m=Math.floor((s%3600)/60),sec=s%60;
+  if(d)return d+'d '+h+'h '+m+'m';
+  if(h)return h+'h '+m+'m '+sec+'s';
+  if(m)return m+'m '+sec+'s';
+  return sec+'s';
+}
+function studyDays(){
+  const map={};
+  entries.forEach(e=>{
+    if(!e.started_at||!e.ended_at)return;
+    const s=new Date(e.started_at),en=new Date(e.ended_at);
+    if(isNaN(s.getTime())||isNaN(en.getTime()))return;
+    const k=dayKey(s);
+    if(!map[k])map[k]={date:k,first:s,last:en};
+    if(s<map[k].first)map[k].first=s;
+    if(en>map[k].last)map[k].last=en;
+  });
+  return Object.values(map).sort((a,b)=>a.first-b.first);
+}
+function sleepGaps(){
+  const days=studyDays(),out=[];
+  for(let i=1;i<days.length;i++){
+    const prev=days[i-1],cur=days[i];
+    if(((parseDayKey(cur.date)-parseDayKey(prev.date))/86400000)!==1)continue;
+    const ms=cur.first.getTime()-prev.last.getTime();
+    if(ms<2*3600*1000)continue;
+    out.push({from:prev.last,to:cur.first,ms,fromDate:prev.date,toDate:cur.date});
+  }
+  return out;
+}
+function lastEndedAt(){
+  let max=0;
+  entries.forEach(e=>{if(e.ended_at){const t=new Date(e.ended_at).getTime();if(t>max)max=t;}});
+  return max?new Date(max):null;
+}
+function liveStatCard(icon,tint,val,lbl,sub){
+  return `<div class="stat"><div class="stat-icon ${tint}">${icon}</div><div><div class="val">${val}</div><div class="lbl">${lbl}</div>${sub?`<div class="sub2">${sub}</div>`:''}</div></div>`;
+}
+function renderLiveStats(){
+  const el=$('#liveStats');
+  if(!el)return;
+  const last=lastEndedAt();
+  const gaps=sleepGaps();
+  const g=gaps.length?gaps[gaps.length-1]:null;
+  const today=new Date();today.setHours(0,0,0,0);
+  const todayMin=minutesPerHour(today).reduce((a,b)=>a+b,0);
+  const todaySessions=entries.filter(e=>overlapsDay(e,today)).length+(timerStart?1:0);
+  let html='';
+  if(timerStart){html+=liveStatCard('⏳','tint-teal','Studying…','Since last study','timer is running');}
+  else{html+=liveStatCard('⏳','tint-teal',last?fmtAgo(Date.now()-last.getTime()):'—','Since last study',last?('last ended '+fmtTime(last)):'no sessions yet');}
+  html+=liveStatCard('🌙','tint-violet',g?fmtAgo(g.ms):'—','Last sleep gap',g?(esc(fmtDayShort(g.fromDate))+' → '+esc(fmtDayShort(g.toDate))):'needs 2 study days');
+  html+=liveStatCard('📅','tint-amber',fmtMin(todayMin),'Studied today',todaySessions+' session'+(todaySessions===1?'':'s'));
+  el.innerHTML=html;
+}
+function renderWeekly(){
+  const el=$('#weeklyOut');
+  if(!el)return;
+  const gaps=sleepGaps();
+  const groups={};
+  entries.forEach(e=>{const k=isoWeek(e.date);(groups[k]=groups[k]||[]).push(e);});
+  const keys=Object.keys(groups).sort((a,b)=>b.localeCompare(a));
+  if(!keys.length){el.innerHTML=emptyBlock('No sessions yet — weekly stats will appear here');return;}
+  el.innerHTML=keys.map(k=>weekCard(k,groups[k],gaps)).join('');
+}
+function weekCard(wk,list,gaps){
+  const n=list.length;
+  const act=list.map(e=>e.actual_time_min);
+  const tot=act.reduce((a,b)=>a+b,0);
+  const days=[...new Set(list.map(e=>e.date))].sort();
+  const wg=gaps.filter(g=>isoWeek(g.toDate)===wk);
+  const byDay={};
+  list.forEach(e=>{byDay[e.date]=(byDay[e.date]||0)+e.actual_time_min;});
+  const dayMax=Math.max(1,...Object.values(byDay));
+  const dayRows=Object.entries(byDay).sort((a,b)=>a[0].localeCompare(b[0])).map(([d,m])=>
+    `<div class="bar-row"><span class="bl">${esc(fmtDayShort(d))}</span><span class="bar-track"><span class="bar-fill" style="width:${Math.max(2,m/dayMax*100)}%"></span></span><span class="bar-val">${fmtMin(m)}</span></div>`
+  ).join('');
+  const gapRows=wg.map(g=>`<div class="gap-row"><span class="gap-when">${esc(fmtDayShort(g.fromDate))} → ${esc(fmtDayShort(g.toDate))}</span><span class="gap-dur">${fmtAgo(g.ms)}</span></div>`).join('');
+  const range=days.length>1?(esc(fmtDayShort(days[0]))+' – '+esc(fmtDayShort(days[days.length-1]))):(days.length?esc(fmtDayShort(days[0])):'');
+  return `<div class="card">
+    <div class="group-head">
+      <div class="group-title"><span class="chip">${esc(wk)}</span><span style="color:var(--muted);font-size:13.5px">${n} session${n===1?'':'s'} · ${fmtMin(tot)} studied${range?' · '+range:''}</span></div>
+    </div>
+    <div class="kpi-grid">
+      ${kpi('Total studied',fmtMin(tot),'this week')}
+      ${kpi('Sessions',n,'count')}
+      ${kpi('Days studied',days.length,'days with sessions')}
+      ${kpi('Avg session',fmtMin(mean(act)),'per session')}
+      ${kpi('Avg sleep gap',wg.length?fmtAgo(mean(wg.map(g=>g.ms))):'—',wg.length?wg.length+' overnight gap'+(wg.length===1?'':'s'):'no overnight gaps')}
+      ${kpi('Longest sleep gap',wg.length?fmtAgo(Math.max(...wg.map(g=>g.ms))):'—','single break')}
+    </div>
+    <div class="sum-grid">
+      <div class="mini-card"><h4>🌙 Sleep gaps</h4>${gapRows||'<div class="empty" style="padding:16px"><p>No overnight gaps this week</p></div>'}</div>
+      <div class="mini-card"><h4>📆 Daily breakdown</h4>${dayRows||'<div class="empty" style="padding:16px"><p>—</p></div>'}</div>
+    </div>
+  </div>`;
+}
+
 /* ---------- fill-out modal ---------- */
 function openFillOut(){
   if(!pending)return;
@@ -829,7 +959,7 @@ function distOf(arr,meta,useMeta){
 }
 
 /* ---------- wiring & init ---------- */
-function renderAll(){renderDayView();renderTable();renderSummary();}
+function renderAll(){renderDayView();renderLiveStats();renderTable();renderSummary();renderWeekly();}
 function updateToday(){
   const d=new Date();
   $('#todayLabel').textContent=d.toLocaleDateString(undefined,{weekday:'short',year:'numeric',month:'short',day:'numeric'});
