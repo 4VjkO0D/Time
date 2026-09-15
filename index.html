@@ -178,6 +178,7 @@ button{cursor:pointer;border:none;background:none}
 .badge.bad{background:rgba(220,38,38,.12);color:var(--bad)}
 .badge.info{background:rgba(8,145,178,.13);color:var(--info)}
 .badge.violet{background:rgba(124,58,237,.13);color:var(--brand2)}
+.badge.grey{background:rgba(111,106,140,.15);color:var(--muted)}
 
 /* toolbar + table */
 .toolbar{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:16px}
@@ -225,6 +226,7 @@ tbody tr:last-child td{border-bottom:none}
 .tint-teal{background:rgba(8,145,178,.14)}
 .tint-amber{background:rgba(245,158,11,.16)}
 .tint-green{background:rgba(22,163,74,.14)}
+.tint-grey{background:rgba(111,106,140,.16)}
 .gap-row{display:flex;justify-content:space-between;gap:12px;padding:8px 12px;background:var(--surface2);border:1px solid var(--line);border-radius:10px;margin-bottom:8px;font-size:13px}
 .gap-row .gap-when{color:var(--muted);font-weight:600}
 .gap-row .gap-dur{font-weight:800;white-space:nowrap}
@@ -381,7 +383,7 @@ tbody tr:last-child td{border-bottom:none}
   <section class="view hidden" id="view-weekly">
     <div class="card">
       <h2>Weekly statistics</h2>
-      <div class="sub">Study time per week, plus the sleep gap between your last session before sleeping and the first session after waking up</div>
+      <div class="sub">Study time per week, with every gap marked as a sleep gap (6–14 hours) or an inactive period (anything else)</div>
     </div>
     <div id="weeklyOut"></div>
   </section>
@@ -603,30 +605,27 @@ function fmtAgo(ms){
   if(m)return m+'m '+sec+'s';
   return sec+'s';
 }
-function studyDays(){
-  const map={};
+const SLEEP_MIN_MS=6*3600*1000,SLEEP_MAX_MS=14*3600*1000;
+function classifyGap(ms){return (ms>SLEEP_MIN_MS&&ms<SLEEP_MAX_MS)?'sleep':'inactive';}
+function allGaps(){
+  const done=[];
   entries.forEach(e=>{
     if(!e.started_at||!e.ended_at)return;
     const s=new Date(e.started_at),en=new Date(e.ended_at);
     if(isNaN(s.getTime())||isNaN(en.getTime()))return;
-    const k=dayKey(s);
-    if(!map[k])map[k]={date:k,first:s,last:en};
-    if(s<map[k].first)map[k].first=s;
-    if(en>map[k].last)map[k].last=en;
+    done.push({start:s,end:en});
   });
-  return Object.values(map).sort((a,b)=>a.first-b.first);
-}
-function sleepGaps(){
-  const days=studyDays(),out=[];
-  for(let i=1;i<days.length;i++){
-    const prev=days[i-1],cur=days[i];
-    if(((parseDayKey(cur.date)-parseDayKey(prev.date))/86400000)!==1)continue;
-    const ms=cur.first.getTime()-prev.last.getTime();
-    if(ms<2*3600*1000)continue;
-    out.push({from:prev.last,to:cur.first,ms,fromDate:prev.date,toDate:cur.date});
+  done.sort((a,b)=>a.start-b.start);
+  const out=[];
+  for(let i=1;i<done.length;i++){
+    const prev=done[i-1],cur=done[i];
+    const ms=cur.start.getTime()-prev.end.getTime();
+    if(ms<=0)continue;
+    out.push({ms,from:prev.end,to:cur.start,fromDate:dayKey(prev.end),toDate:dayKey(cur.start),type:classifyGap(ms)});
   }
   return out;
 }
+function sleepGaps(){return allGaps().filter(g=>g.type==='sleep');}
 function lastEndedAt(){
   let max=0;
   entries.forEach(e=>{if(e.ended_at){const t=new Date(e.ended_at).getTime();if(t>max)max=t;}});
@@ -639,7 +638,7 @@ function renderLiveStats(){
   const el=$('#liveStats');
   if(!el)return;
   const last=lastEndedAt();
-  const gaps=sleepGaps();
+  const gaps=allGaps();
   const g=gaps.length?gaps[gaps.length-1]:null;
   const today=new Date();today.setHours(0,0,0,0);
   const todayMin=minutesPerHour(today).reduce((a,b)=>a+b,0);
@@ -647,14 +646,15 @@ function renderLiveStats(){
   let html='';
   if(timerStart){html+=liveStatCard('⏳','tint-teal','Studying…','Since last study','timer is running');}
   else{html+=liveStatCard('⏳','tint-teal',last?fmtAgo(Date.now()-last.getTime()):'—','Since last study',last?('last ended '+fmtTime(last)):'no sessions yet');}
-  html+=liveStatCard('🌙','tint-violet',g?fmtAgo(g.ms):'—','Last sleep gap',g?(esc(fmtDayShort(g.fromDate))+' → '+esc(fmtDayShort(g.toDate))):'needs 2 study days');
+  if(g&&g.type==='sleep'){html+=liveStatCard('😴','tint-violet',fmtAgo(g.ms),'Last gap','Sleep gap · '+esc(fmtDayShort(g.fromDate))+' → '+esc(fmtDayShort(g.toDate)));}
+  else{html+=liveStatCard('⏸️','tint-grey',g?fmtAgo(g.ms):'—','Last gap',g?('Inactive period · '+esc(fmtDayShort(g.fromDate))+' → '+esc(fmtDayShort(g.toDate))):'needs two sessions');}
   html+=liveStatCard('📅','tint-amber',fmtMin(todayMin),'Studied today',todaySessions+' session'+(todaySessions===1?'':'s'));
   el.innerHTML=html;
 }
 function renderWeekly(){
   const el=$('#weeklyOut');
   if(!el)return;
-  const gaps=sleepGaps();
+  const gaps=allGaps();
   const groups={};
   entries.forEach(e=>{const k=isoWeek(e.date);(groups[k]=groups[k]||[]).push(e);});
   const keys=Object.keys(groups).sort((a,b)=>b.localeCompare(a));
@@ -667,13 +667,15 @@ function weekCard(wk,list,gaps){
   const tot=act.reduce((a,b)=>a+b,0);
   const days=[...new Set(list.map(e=>e.date))].sort();
   const wg=gaps.filter(g=>isoWeek(g.toDate)===wk);
+  const sleepG=wg.filter(g=>g.type==='sleep');
+  const inactG=wg.filter(g=>g.type==='inactive');
   const byDay={};
   list.forEach(e=>{byDay[e.date]=(byDay[e.date]||0)+e.actual_time_min;});
   const dayMax=Math.max(1,...Object.values(byDay));
   const dayRows=Object.entries(byDay).sort((a,b)=>a[0].localeCompare(b[0])).map(([d,m])=>
     `<div class="bar-row"><span class="bl">${esc(fmtDayShort(d))}</span><span class="bar-track"><span class="bar-fill" style="width:${Math.max(2,m/dayMax*100)}%"></span></span><span class="bar-val">${fmtMin(m)}</span></div>`
   ).join('');
-  const gapRows=wg.map(g=>`<div class="gap-row"><span class="gap-when">${esc(fmtDayShort(g.fromDate))} → ${esc(fmtDayShort(g.toDate))}</span><span class="gap-dur">${fmtAgo(g.ms)}</span></div>`).join('');
+  const gapRows=wg.map(g=>`<div class="gap-row"><span class="gap-when"><span class="badge ${g.type==='sleep'?'violet':'grey'}">${g.type==='sleep'?'😴 Sleep':'⏸️ Inactive'}</span> ${esc(fmtDayShort(g.fromDate))} → ${esc(fmtDayShort(g.toDate))}</span><span class="gap-dur">${fmtAgo(g.ms)}</span></div>`).join('');
   const range=days.length>1?(esc(fmtDayShort(days[0]))+' – '+esc(fmtDayShort(days[days.length-1]))):(days.length?esc(fmtDayShort(days[0])):'');
   return `<div class="card">
     <div class="group-head">
@@ -684,11 +686,12 @@ function weekCard(wk,list,gaps){
       ${kpi('Sessions',n,'count')}
       ${kpi('Days studied',days.length,'days with sessions')}
       ${kpi('Avg session',fmtMin(mean(act)),'per session')}
-      ${kpi('Avg sleep gap',wg.length?fmtAgo(mean(wg.map(g=>g.ms))):'—',wg.length?wg.length+' overnight gap'+(wg.length===1?'':'s'):'no overnight gaps')}
-      ${kpi('Longest sleep gap',wg.length?fmtAgo(Math.max(...wg.map(g=>g.ms))):'—','single break')}
+      ${kpi('Avg sleep gap',sleepG.length?fmtAgo(mean(sleepG.map(g=>g.ms))):'—',sleepG.length?sleepG.length+' sleep gap'+(sleepG.length===1?'':'s'):'no sleep gaps')}
+      ${kpi('Longest sleep gap',sleepG.length?fmtAgo(Math.max(...sleepG.map(g=>g.ms))):'—','single break')}
+      ${kpi('Inactive periods',inactG.length,inactG.length?fmtMin(inactG.reduce((a,b)=>a+b.ms,0)/60000)+' total':'none')}
     </div>
     <div class="sum-grid">
-      <div class="mini-card"><h4>🌙 Sleep gaps</h4>${gapRows||'<div class="empty" style="padding:16px"><p>No overnight gaps this week</p></div>'}</div>
+      <div class="mini-card"><h4>🌙 Gaps — sleep vs inactive</h4>${gapRows||'<div class="empty" style="padding:16px"><p>No gaps between sessions this week</p></div>'}</div>
       <div class="mini-card"><h4>📆 Daily breakdown</h4>${dayRows||'<div class="empty" style="padding:16px"><p>—</p></div>'}</div>
     </div>
   </div>`;
