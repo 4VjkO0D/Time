@@ -383,7 +383,7 @@ tbody tr:last-child td{border-bottom:none}
   <section class="view hidden" id="view-weekly">
     <div class="card">
       <h2>Weekly statistics</h2>
-      <div class="sub">Study time per week, with every gap marked as a sleep gap (6–14 hours) or an inactive period (anything else)</div>
+      <div class="sub">Study time per week — breaks over 6 hours are classified as a sleep gap (6–14 h) or an inactive period (14 h and above); anything shorter is ignored</div>
     </div>
     <div id="weeklyOut"></div>
   </section>
@@ -606,7 +606,11 @@ function fmtAgo(ms){
   return sec+'s';
 }
 const SLEEP_MIN_MS=6*3600*1000,SLEEP_MAX_MS=14*3600*1000;
-function classifyGap(ms){return (ms>SLEEP_MIN_MS&&ms<SLEEP_MAX_MS)?'sleep':'inactive';}
+function classifyGap(ms){
+  if(ms>SLEEP_MIN_MS&&ms<SLEEP_MAX_MS)return 'sleep';
+  if(ms>=SLEEP_MAX_MS)return 'inactive';
+  return null;
+}
 function allGaps(){
   const done=[];
   entries.forEach(e=>{
@@ -621,7 +625,9 @@ function allGaps(){
     const prev=done[i-1],cur=done[i];
     const ms=cur.start.getTime()-prev.end.getTime();
     if(ms<=0)continue;
-    out.push({ms,from:prev.end,to:cur.start,fromDate:dayKey(prev.end),toDate:dayKey(cur.start),type:classifyGap(ms)});
+    const type=classifyGap(ms);
+    if(!type)continue;
+    out.push({ms,from:prev.end,to:cur.start,fromDate:dayKey(prev.end),toDate:dayKey(cur.start),type});
   }
   return out;
 }
@@ -647,7 +653,7 @@ function renderLiveStats(){
   if(timerStart){html+=liveStatCard('⏳','tint-teal','Studying…','Since last study','timer is running');}
   else{html+=liveStatCard('⏳','tint-teal',last?fmtAgo(Date.now()-last.getTime()):'—','Since last study',last?('last ended '+fmtTime(last)):'no sessions yet');}
   if(g&&g.type==='sleep'){html+=liveStatCard('😴','tint-violet',fmtAgo(g.ms),'Last gap','Sleep gap · '+esc(fmtDayShort(g.fromDate))+' → '+esc(fmtDayShort(g.toDate)));}
-  else{html+=liveStatCard('⏸️','tint-grey',g?fmtAgo(g.ms):'—','Last gap',g?('Inactive period · '+esc(fmtDayShort(g.fromDate))+' → '+esc(fmtDayShort(g.toDate))):'needs two sessions');}
+  else{html+=liveStatCard('⏸️','tint-grey',g?fmtAgo(g.ms):'—','Last gap',g?('Inactive period · '+esc(fmtDayShort(g.fromDate))+' → '+esc(fmtDayShort(g.toDate))):'needs a 6h+ break');}
   html+=liveStatCard('📅','tint-amber',fmtMin(todayMin),'Studied today',todaySessions+' session'+(todaySessions===1?'':'s'));
   el.innerHTML=html;
 }
@@ -688,10 +694,10 @@ function weekCard(wk,list,gaps){
       ${kpi('Avg session',fmtMin(mean(act)),'per session')}
       ${kpi('Avg sleep gap',sleepG.length?fmtAgo(mean(sleepG.map(g=>g.ms))):'—',sleepG.length?sleepG.length+' sleep gap'+(sleepG.length===1?'':'s'):'no sleep gaps')}
       ${kpi('Longest sleep gap',sleepG.length?fmtAgo(Math.max(...sleepG.map(g=>g.ms))):'—','single break')}
-      ${kpi('Inactive periods',inactG.length,inactG.length?fmtMin(inactG.reduce((a,b)=>a+b.ms,0)/60000)+' total':'none')}
+      ${kpi('Inactive periods',inactG.length,inactG.length?fmtMin(inactG.reduce((a,b)=>a+b.ms,0)/60000)+' total':'no 14h+ breaks')}
     </div>
     <div class="sum-grid">
-      <div class="mini-card"><h4>🌙 Gaps — sleep vs inactive</h4>${gapRows||'<div class="empty" style="padding:16px"><p>No gaps between sessions this week</p></div>'}</div>
+      <div class="mini-card"><h4>🌙 Gaps — sleep vs inactive</h4>${gapRows||'<div class="empty" style="padding:16px"><p>No 6h+ breaks this week</p></div>'}</div>
       <div class="mini-card"><h4>📆 Daily breakdown</h4>${dayRows||'<div class="empty" style="padding:16px"><p>—</p></div>'}</div>
     </div>
   </div>`;
